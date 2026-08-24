@@ -216,13 +216,40 @@ describe('mapOrcaValues', () => {
   })
 
   it.each([
-    { calculationType: 0, family: 'navigation.courseGreatCircle', bearing: 'True', reference: 0 },
-    { calculationType: 1, family: 'navigation.courseRhumbline', bearing: 'Magnetic', reference: 1 },
-  ])('maps active route data to $family', ({ calculationType, family, bearing, reference }) => {
+    {
+      calculationType: 0,
+      family: 'navigation.courseGreatCircle',
+      bearing: 'True',
+      transformedBearing: 'Magnetic',
+      transformedPosition: 1.0,
+      transformedOrigin: 0.9,
+      reference: 0,
+      referenceKey: 'bearingRef'
+    },
+    {
+      calculationType: 1,
+      family: 'navigation.courseRhumbline',
+      bearing: 'Magnetic',
+      transformedBearing: 'True',
+      transformedPosition: 1.4,
+      transformedOrigin: 1.3,
+      reference: 1,
+      referenceKey: 'bearingReference'
+    },
+  ])('maps active route data to $family and emits both bearing references', ({
+    calculationType,
+    family,
+    bearing,
+    transformedBearing,
+    transformedPosition,
+    transformedOrigin,
+    reference,
+    referenceKey
+  }) => {
     const etaDays = Date.UTC(2026, 7, 24) / 86_400_000
     const result = mapOrcaValues({
       'navigation.data.254.calculationType': calculationType,
-      'navigation.data.254.bearingReference': reference,
+      [`navigation.data.254.${referenceKey}`]: reference,
       'navigation.data.254.latitude': 47.5,
       'navigation.data.254.longitude': -122.5,
       'navigation.data.254.distance': 1200,
@@ -232,6 +259,7 @@ describe('mapOrcaValues', () => {
       'navigation.data.254.etaDate': etaDays,
       'navigation.data.254.etaTime': 12 * 3600 + 30 * 60,
       'navigation.xte.254.xte': 4.2,
+      'navigation.heading.254.variation': 0.2,
     })
 
     expect(result).toContainEqual({
@@ -240,13 +268,36 @@ describe('mapOrcaValues', () => {
     })
     expect(result).toContainEqual({ path: `${family}.nextPoint.distance`, value: 1200 })
     expect(result).toContainEqual({ path: `${family}.nextPoint.bearing${bearing}`, value: 1.2 })
+    const transformedNextPoint = result.find(({ path }) =>
+      path === `${family}.nextPoint.bearing${transformedBearing}`
+    )
+    expect(transformedNextPoint?.value).toBeCloseTo(transformedPosition)
     expect(result).toContainEqual({ path: `${family}.bearingTrack${bearing}`, value: 1.1 })
+    const transformedTrack = result.find(({ path }) =>
+      path === `${family}.bearingTrack${transformedBearing}`
+    )
+    expect(transformedTrack?.value).toBeCloseTo(transformedOrigin)
     expect(result).toContainEqual({ path: `${family}.nextPoint.velocityMadeGood`, value: 2.5 })
     expect(result).toContainEqual({
       path: `${family}.nextPoint.estimatedTimeOfArrival`,
       value: '2026-08-24T12:30:00.000Z'
     })
     expect(result).toContainEqual({ path: `${family}.crossTrackError`, value: 4.2 })
+  })
+
+  it('normalizes transformed route bearings across north', () => {
+    const result = mapOrcaValues({
+      'navigation.data.254.calculationType': 0,
+      'navigation.data.254.bearingRef': 0,
+      'navigation.data.254.distance': 1,
+      'navigation.data.254.bearingFromPosition': 0.1,
+      'navigation.heading.254.variation': 0.2,
+    })
+
+    const magnetic = result.find(({ path }) =>
+      path === 'navigation.courseGreatCircle.nextPoint.bearingMagnetic'
+    )
+    expect(magnetic?.value).toBeCloseTo(Math.PI * 2 - 0.1)
   })
 
   it('suppresses inactive zero-filled and unsupported route snapshots', () => {

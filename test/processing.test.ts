@@ -34,6 +34,43 @@ describe('OrcaMessageProcessor timestamps and suppression', () => {
     })
   })
 
+  it('timestamps transformed route bearings from the bearing and variation sources', () => {
+    const now = Date.parse('2026-08-23T12:00:00Z')
+    const processor = new OrcaMessageProcessor({}, () => now)
+    const output = sink()
+    processor.handle({
+      timestamp: '2026-08-23T12:00:00Z',
+      values: {
+        'navigation.data.254.calculationType': 0,
+        'navigation.data.254.bearingRef': 0,
+        'navigation.data.254.distance': 1,
+        'navigation.data.254.bearingFromPosition': 1.2,
+        'navigation.heading.254.variation': 0.2
+      },
+      values_age: {
+        'navigation.data.254.calculationType': 0,
+        'navigation.data.254.bearingRef': 500,
+        'navigation.data.254.distance': 0,
+        'navigation.data.254.bearingFromPosition': 1000,
+        'navigation.heading.254.variation': 2000
+      }
+    }, output)
+
+    const updates = output.handleMessage.mock.calls[0][1].updates
+    expect(updates).toEqual(expect.arrayContaining([
+      {
+        timestamp: '2026-08-23T11:59:59.000Z',
+        values: [{ path: 'navigation.courseGreatCircle.nextPoint.bearingTrue', value: 1.2 }]
+      },
+      {
+        timestamp: '2026-08-23T11:59:58.000Z',
+        values: expect.arrayContaining([
+          { path: 'navigation.courseGreatCircle.nextPoint.bearingMagnetic', value: 1 }
+        ])
+      }
+    ]))
+  })
+
   it('suppresses unchanged snapshots until the source heartbeat advances', () => {
     let now = Date.parse('2026-08-23T12:00:00Z')
     const processor = new OrcaMessageProcessor({ heartbeatSeconds: 30 }, () => now)

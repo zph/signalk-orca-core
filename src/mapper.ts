@@ -82,6 +82,10 @@ function signedAngle(value: unknown): number | undefined {
   return angle !== undefined && angle >= -TWO_PI && angle < TWO_PI ? angle : undefined
 }
 
+function normalizeAngle(value: number): number {
+  return ((value % TWO_PI) + TWO_PI) % TWO_PI
+}
+
 function rfc3339(value: unknown): string | undefined {
   const text = aisString(value, 64)
   if (!text || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(text)) {
@@ -310,6 +314,12 @@ export function mapOrcaValues(
   }
   const headingVariation = signedAngle(v('navigation.heading.254.variation'))
   const fallbackVariation = signedAngle(v('navigation.magvar.254.variation'))
+  const magneticVariation = headingVariation ?? fallbackVariation
+  const magneticVariationKey = headingVariation !== undefined
+    ? 'navigation.heading.254.variation'
+    : fallbackVariation !== undefined
+      ? 'navigation.magvar.254.variation'
+      : undefined
   if (headingVariation !== undefined) {
     emit('navigation.heading.254.variation', 'navigation.magneticVariation', headingVariation)
   } else if (fallbackVariation !== undefined) {
@@ -390,23 +400,49 @@ export function mapOrcaValues(
       emit([`${routePrefix}distance`, calculationKey], `${courseFamily}.nextPoint.distance`, distance)
     }
 
-    const bearingReference = finiteNumber(v(`${routePrefix}bearingReference`))
+    const bearingReferenceKey = v(`${routePrefix}bearingRef`) !== undefined
+      ? `${routePrefix}bearingRef`
+      : `${routePrefix}bearingReference`
+    const bearingReference = finiteNumber(v(bearingReferenceKey))
     const bearingSuffix = bearingReference === 0 ? 'True' : bearingReference === 1 ? 'Magnetic' : undefined
+    const transformedBearingSuffix = bearingReference === 0 ? 'Magnetic' : bearingReference === 1 ? 'True' : undefined
+    const transformBearing = (bearing: number): number | undefined => {
+      if (magneticVariation === undefined) return undefined
+      return normalizeAngle(bearingReference === 0
+        ? bearing - magneticVariation
+        : bearing + magneticVariation)
+    }
     const bearingFromPosition = aisAngle(v(`${routePrefix}bearingFromPosition`))
     if (bearingSuffix && bearingFromPosition !== undefined) {
       emit(
-        [`${routePrefix}bearingFromPosition`, `${routePrefix}bearingReference`, calculationKey],
+        [`${routePrefix}bearingFromPosition`, bearingReferenceKey, calculationKey],
         `${courseFamily}.nextPoint.bearing${bearingSuffix}`,
         bearingFromPosition
       )
+      const transformed = transformBearing(bearingFromPosition)
+      if (transformedBearingSuffix && transformed !== undefined && magneticVariationKey) {
+        emit(
+          [`${routePrefix}bearingFromPosition`, bearingReferenceKey, magneticVariationKey, calculationKey],
+          `${courseFamily}.nextPoint.bearing${transformedBearingSuffix}`,
+          transformed
+        )
+      }
     }
     const bearingFromOrigin = aisAngle(v(`${routePrefix}bearingFromOrigin`))
     if (bearingSuffix && bearingFromOrigin !== undefined) {
       emit(
-        [`${routePrefix}bearingFromOrigin`, `${routePrefix}bearingReference`, calculationKey],
+        [`${routePrefix}bearingFromOrigin`, bearingReferenceKey, calculationKey],
         `${courseFamily}.bearingTrack${bearingSuffix}`,
         bearingFromOrigin
       )
+      const transformed = transformBearing(bearingFromOrigin)
+      if (transformedBearingSuffix && transformed !== undefined && magneticVariationKey) {
+        emit(
+          [`${routePrefix}bearingFromOrigin`, bearingReferenceKey, magneticVariationKey, calculationKey],
+          `${courseFamily}.bearingTrack${transformedBearingSuffix}`,
+          transformed
+        )
+      }
     }
 
     const velocity = nonNegative(`${routePrefix}velocity`)

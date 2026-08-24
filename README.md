@@ -90,6 +90,11 @@ Own-vessel mappings include:
 
 Inactive zero-filled routes, unsupported calculation enums, unknown temperature sources, and duplicate raw sensor groups are suppressed by default. Numeric NMEA waypoint identifiers are not represented as Signal K resource links.
 
+Route bearing input accepts both Orca's live `bearingRef` spelling and the older
+`bearingReference` spelling. The referenced bearing is published directly; when
+magnetic variation is available, the plugin also derives and publishes the
+complementary true or magnetic value for both next-point bearing and bearing track.
+
 ### AIS targets
 
 Targets use `vessels.urn:mrn:imo:mmsi:<MMSI>`. Dynamic paths are `navigation.position`, `navigation.courseOverGroundTrue`, `navigation.speedOverGround`, and `navigation.headingTrue`. Static name, callsign, type, beam, length, draft, destination, and ETA are merged through a root-object fragment so an existing primitive `communication.callsignVhf` cannot trigger the Signal K full-model metadata exception.
