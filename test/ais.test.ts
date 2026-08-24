@@ -74,14 +74,58 @@ describe('mapAisValues', () => {
       'ais.x.257656520.position.eta': '2026-05-02T16:00:00Z',
     })
     const delta = result[0]
-    expect(delta.values).toContainEqual({ path: '', value: { name: 'HUNDVAAG I' } })
-    expect(delta.values).toContainEqual({ path: 'communication.callsignVhf', value: 'LKOT' })
-    expect(delta.values).toContainEqual({ path: 'design.aisShipType', value: { id: 69 } })
-    expect(delta.values).toContainEqual({ path: 'design.beam', value: 5.0 })
-    expect(delta.values).toContainEqual({ path: 'design.length', value: { overall: 15.0 } })
-    expect(delta.values).toContainEqual({ path: 'design.draft', value: { current: 2.5 } })
-    expect(delta.values).toContainEqual({ path: 'navigation.destination.commonName', value: 'STAVANGER' })
-    expect(delta.values).toContainEqual({ path: 'navigation.destination.eta', value: '2026-05-02T16:00:00Z' })
+    expect(delta.values[0]).toEqual({
+      path: '',
+      value: {
+        mmsi: '257656520',
+        name: 'HUNDVAAG I',
+        communication: { callsignVhf: 'LKOT' },
+        design: {
+          aisShipType: { id: 69 },
+          beam: 5.0,
+          length: { overall: 15.0 },
+          draft: { current: 2.5 },
+        },
+        navigation: {
+          destination: {
+            commonName: 'STAVANGER',
+            eta: '2026-05-02T16:00:00Z',
+          },
+        },
+      },
+    })
+    expect(delta.values.some(({ path }) => path === 'communication.callsignVhf')).toBe(false)
+  })
+
+  it('omits absent static fields without empty placeholder objects', () => {
+    const [delta] = mapAisValues({
+      'ais.x.259246000.position.name': ' TEST VESSEL ',
+      'ais.x.259246000.position.callsign': '   ',
+      'ais.x.259246000.position.destination': '@@@@@',
+    })
+
+    expect(delta.values).toEqual([{ path: '', value: { mmsi: '259246000', name: 'TEST VESSEL' } }])
+  })
+
+  it('drops invalid identities and malformed fields without losing valid siblings', () => {
+    const result = mapAisValues({
+      'ais.x.12345.position.name': 'BAD IDENTITY',
+      'ais.x.259246000.position.latitude': 91,
+      'ais.x.259246000.position.longitude': 5,
+      'ais.x.259246000.position.COG': Number.NaN,
+      'ais.x.259246000.position.SOG': -1,
+      'ais.x.259246000.position.headingTrue': 511,
+      'ais.x.259246000.position.name': 'VALID NAME',
+      'ais.x.259246000.position.beam': -2,
+      'ais.x.259246000.position.eta': 'not-a-date',
+      'ais.x.259246000.position.class': 'B',
+    })
+
+    expect(result).toHaveLength(1)
+    expect(result[0].values).toEqual([
+      { path: '', value: { mmsi: '259246000', name: 'VALID NAME' } },
+      { path: 'sensors.ais.class', value: 'B' },
+    ])
   })
 
   it('returns empty array when no AIS keys present', () => {

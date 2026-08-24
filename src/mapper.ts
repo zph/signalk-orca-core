@@ -11,6 +11,42 @@ export interface AisDelta {
 type DebugFn = (msg: string) => void
 
 const AIS_KEY_REGEX = /^ais\.x\.(\d+)\.position\.(.+)$/
+const MMSI_REGEX = /^\d{9}$/
+const TWO_PI = Math.PI * 2
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function numberInRange(value: unknown, minimum: number, maximum: number): number | undefined {
+  const number = finiteNumber(value)
+  return number !== undefined && number >= minimum && number <= maximum ? number : undefined
+}
+
+function nonNegativeNumber(value: unknown): number | undefined {
+  const number = finiteNumber(value)
+  return number !== undefined && number >= 0 ? number : undefined
+}
+
+function aisString(value: unknown, maximumLength: number): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim()
+  if (!normalized || /^[@\-_. ]+$/.test(normalized)) return undefined
+  return normalized.slice(0, maximumLength)
+}
+
+function aisAngle(value: unknown): number | undefined {
+  const angle = finiteNumber(value)
+  return angle !== undefined && angle >= 0 && angle < TWO_PI ? angle : undefined
+}
+
+function rfc3339(value: unknown): string | undefined {
+  const text = aisString(value, 64)
+  if (!text || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(text)) {
+    return undefined
+  }
+  return Number.isNaN(Date.parse(text)) ? undefined : text
+}
 
 export function mapAisValues(
   values: Record<string, any>,
@@ -31,28 +67,67 @@ export function mapAisValues(
 
   const result: AisDelta[] = []
   for (const [mmsi, f] of byMmsi) {
-    const pv: PathValue[] = []
-    pv.push({ path: '', value: { mmsi } })
-
-    if (f.latitude != null && f.longitude != null) {
-      pv.push({ path: 'navigation.position', value: { latitude: f.latitude, longitude: f.longitude } })
+    if (!MMSI_REGEX.test(mmsi)) {
+      if (debug) debug('Dropped AIS target with invalid identity')
+      continue
     }
-    if (f.COG != null) pv.push({ path: 'navigation.courseOverGroundTrue', value: f.COG })
-    if (f.SOG != null) pv.push({ path: 'navigation.speedOverGround', value: f.SOG })
-    if (f.headingTrue != null) pv.push({ path: 'navigation.headingTrue', value: f.headingTrue })
-    if (f.name != null) pv.push({ path: '', value: { name: f.name } })
-    if (f.callsign != null) pv.push({ path: 'communication.callsignVhf', value: f.callsign })
-    if (f.vesselType != null) pv.push({ path: 'design.aisShipType', value: { id: f.vesselType } })
-    if (f.beam != null) pv.push({ path: 'design.beam', value: f.beam })
-    if (f.length != null) pv.push({ path: 'design.length', value: { overall: f.length } })
-    if (f.draft != null) pv.push({ path: 'design.draft', value: { current: f.draft } })
-    if (f.destination != null) pv.push({ path: 'navigation.destination.commonName', value: f.destination })
-    if (f.eta != null) pv.push({ path: 'navigation.destination.eta', value: f.eta })
-    if (f.class != null) pv.push({ path: 'sensors.ais.class', value: f.class })
+
+    const pv: PathValue[] = []
+
+    const latitude = numberInRange(f.latitude, -90, 90)
+    const longitude = numberInRange(f.longitude, -180, 180)
+    if (latitude !== undefined && longitude !== undefined) {
+      pv.push({ path: 'navigation.position', value: { latitude, longitude } })
+    }
+
+    const course = aisAngle(f.COG)
+    if (course !== undefined) pv.push({ path: 'navigation.courseOverGroundTrue', value: course })
+
+    const speed = nonNegativeNumber(f.SOG)
+    if (speed !== undefined) pv.push({ path: 'navigation.speedOverGround', value: speed })
+
+    const heading = aisAngle(f.headingTrue)
+    if (heading !== undefined) pv.push({ path: 'navigation.headingTrue', value: heading })
+
+    const staticFragment: Record<string, any> = { mmsi }
+    const name = aisString(f.name, 128)
+    if (name !== undefined) staticFragment.name = name
+
+    const callsign = aisString(f.callsign, 32)
+    if (callsign !== undefined) staticFragment.communication = { callsignVhf: callsign }
+
+    const vesselType = typeof f.vesselType === 'string'
+      ? aisString(f.vesselType, 32)
+      : nonNegativeNumber(f.vesselType)
+    const beam = nonNegativeNumber(f.beam)
+    const length = nonNegativeNumber(f.length)
+    const draft = nonNegativeNumber(f.draft)
+    if (vesselType !== undefined || beam !== undefined || length !== undefined || draft !== undefined) {
+      const design: Record<string, any> = {}
+      if (vesselType !== undefined) design.aisShipType = { id: vesselType }
+      if (beam !== undefined) design.beam = beam
+      if (length !== undefined) design.length = { overall: length }
+      if (draft !== undefined) design.draft = { current: draft }
+      staticFragment.design = design
+    }
+
+    const destinationName = aisString(f.destination, 128)
+    const eta = rfc3339(f.eta)
+    if (destinationName !== undefined || eta !== undefined) {
+      const destination: Record<string, any> = {}
+      if (destinationName !== undefined) destination.commonName = destinationName
+      if (eta !== undefined) destination.eta = eta
+      staticFragment.navigation = { destination }
+    }
+
+    pv.unshift({ path: '', value: staticFragment })
+
+    const aisClass = aisString(f.class, 16)
+    if (aisClass !== undefined) pv.push({ path: 'sensors.ais.class', value: aisClass })
 
     if (debug) debug(`AIS ${mmsi} → ${pv.length} values`)
 
-    if (pv.length > 1) {
+    if (pv.length > 1 || Object.keys(staticFragment).length > 1) {
       result.push({
         context: `vessels.urn:mrn:imo:mmsi:${mmsi}`,
         values: pv
