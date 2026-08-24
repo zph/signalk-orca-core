@@ -3,9 +3,16 @@ export interface PathValue {
   value: any
 }
 
+export type ValueClass = 'dynamic' | 'static'
+
+export interface MappedPathValue extends PathValue {
+  sourceKeys?: string[]
+  valueClass?: ValueClass
+}
+
 export interface AisDelta {
   context: string
-  values: PathValue[]
+  values: MappedPathValue[]
 }
 
 type DebugFn = (msg: string) => void
@@ -13,6 +20,20 @@ type DebugFn = (msg: string) => void
 const AIS_KEY_REGEX = /^ais\.x\.(\d+)\.position\.(.+)$/
 const MMSI_REGEX = /^\d{9}$/
 const TWO_PI = Math.PI * 2
+
+function mappedValue(
+  path: string,
+  value: any,
+  sourceKeys: string[],
+  valueClass: ValueClass = 'dynamic'
+): MappedPathValue {
+  const result: MappedPathValue = { path, value }
+  Object.defineProperties(result, {
+    sourceKeys: { value: sourceKeys, enumerable: false },
+    valueClass: { value: valueClass, enumerable: false }
+  })
+  return result
+}
 
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
@@ -72,29 +93,48 @@ export function mapAisValues(
       continue
     }
 
-    const pv: PathValue[] = []
+    const pv: MappedPathValue[] = []
+    const targetPrefix = `ais.x.${mmsi}.position.`
+    const sourceKey = (field: string) => `${targetPrefix}${field}`
 
     const latitude = numberInRange(f.latitude, -90, 90)
     const longitude = numberInRange(f.longitude, -180, 180)
     if (latitude !== undefined && longitude !== undefined) {
-      pv.push({ path: 'navigation.position', value: { latitude, longitude } })
+      pv.push(mappedValue(
+        'navigation.position',
+        { latitude, longitude },
+        [sourceKey('latitude'), sourceKey('longitude')]
+      ))
     }
 
     const course = aisAngle(f.COG)
-    if (course !== undefined) pv.push({ path: 'navigation.courseOverGroundTrue', value: course })
+    if (course !== undefined) {
+      pv.push(mappedValue('navigation.courseOverGroundTrue', course, [sourceKey('COG')]))
+    }
 
     const speed = nonNegativeNumber(f.SOG)
-    if (speed !== undefined) pv.push({ path: 'navigation.speedOverGround', value: speed })
+    if (speed !== undefined) {
+      pv.push(mappedValue('navigation.speedOverGround', speed, [sourceKey('SOG')]))
+    }
 
     const heading = aisAngle(f.headingTrue)
-    if (heading !== undefined) pv.push({ path: 'navigation.headingTrue', value: heading })
+    if (heading !== undefined) {
+      pv.push(mappedValue('navigation.headingTrue', heading, [sourceKey('headingTrue')]))
+    }
 
     const staticFragment: Record<string, any> = { mmsi }
+    const staticKeys: string[] = []
     const name = aisString(f.name, 128)
-    if (name !== undefined) staticFragment.name = name
+    if (name !== undefined) {
+      staticFragment.name = name
+      staticKeys.push(sourceKey('name'))
+    }
 
     const callsign = aisString(f.callsign, 32)
-    if (callsign !== undefined) staticFragment.communication = { callsignVhf: callsign }
+    if (callsign !== undefined) {
+      staticFragment.communication = { callsignVhf: callsign }
+      staticKeys.push(sourceKey('callsign'))
+    }
 
     const vesselType = typeof f.vesselType === 'string'
       ? aisString(f.vesselType, 32)
@@ -104,10 +144,22 @@ export function mapAisValues(
     const draft = nonNegativeNumber(f.draft)
     if (vesselType !== undefined || beam !== undefined || length !== undefined || draft !== undefined) {
       const design: Record<string, any> = {}
-      if (vesselType !== undefined) design.aisShipType = { id: vesselType }
-      if (beam !== undefined) design.beam = beam
-      if (length !== undefined) design.length = { overall: length }
-      if (draft !== undefined) design.draft = { current: draft }
+      if (vesselType !== undefined) {
+        design.aisShipType = { id: vesselType }
+        staticKeys.push(sourceKey('vesselType'))
+      }
+      if (beam !== undefined) {
+        design.beam = beam
+        staticKeys.push(sourceKey('beam'))
+      }
+      if (length !== undefined) {
+        design.length = { overall: length }
+        staticKeys.push(sourceKey('length'))
+      }
+      if (draft !== undefined) {
+        design.draft = { current: draft }
+        staticKeys.push(sourceKey('draft'))
+      }
       staticFragment.design = design
     }
 
@@ -115,15 +167,24 @@ export function mapAisValues(
     const eta = rfc3339(f.eta)
     if (destinationName !== undefined || eta !== undefined) {
       const destination: Record<string, any> = {}
-      if (destinationName !== undefined) destination.commonName = destinationName
-      if (eta !== undefined) destination.eta = eta
+      if (destinationName !== undefined) {
+        destination.commonName = destinationName
+        staticKeys.push(sourceKey('destination'))
+      }
+      if (eta !== undefined) {
+        destination.eta = eta
+        staticKeys.push(sourceKey('eta'))
+      }
       staticFragment.navigation = { destination }
     }
 
-    pv.unshift({ path: '', value: staticFragment })
+    const fallbackKeys = [...pv.flatMap((value) => value.sourceKeys ?? [])]
+    pv.unshift(mappedValue('', staticFragment, staticKeys.length > 0 ? staticKeys : fallbackKeys, 'static'))
 
     const aisClass = aisString(f.class, 16)
-    if (aisClass !== undefined) pv.push({ path: 'sensors.ais.class', value: aisClass })
+    if (aisClass !== undefined) {
+      pv.push(mappedValue('sensors.ais.class', aisClass, [sourceKey('class')], 'static'))
+    }
 
     if (debug) debug(`AIS ${mmsi} → ${pv.length} values`)
 
@@ -159,7 +220,7 @@ export function mapOrcaValues(
   }
 
   function emit(orcaKeys: string | string[], skPath: string, value: any) {
-    result.push({ path: skPath, value })
+    result.push(mappedValue(skPath, value, Array.isArray(orcaKeys) ? orcaKeys : [orcaKeys]))
     if (debug) {
       const from = Array.isArray(orcaKeys) ? orcaKeys.join(' + ') : orcaKeys
       debug(`${from} → ${skPath} = ${JSON.stringify(value)}`)

@@ -1,7 +1,7 @@
 import { Plugin, ServerAPI } from '@signalk/server-api'
 import WebSocket from 'ws'
 import { discoverOrcaCore } from './discovery'
-import { handleOrcaMessage, OrcaMessage } from './handler'
+import { handleOrcaMessage, OrcaMessage, OrcaMessageProcessor } from './handler'
 
 interface OrcaCoreConfig {
   autoDiscover: boolean
@@ -26,6 +26,19 @@ module.exports = (app: ServerAPI): Plugin => {
   let cancelDiscovery: (() => void) | undefined
   let discoveryInProgress = false
   let stopped = false
+  let processor: OrcaMessageProcessor | undefined
+  const canTrackLocalAis = typeof (app as any).registerDeltaInputHandler === 'function'
+
+  if (canTrackLocalAis) {
+    ;(app as any).registerDeltaInputHandler((delta: any, next: (delta: any) => void) => {
+      try {
+        processor?.recordExternalDelta(delta)
+      } catch (error) {
+        app.debug(`[AIS precedence] Failed to inspect delta: ${error}`)
+      }
+      next(delta)
+    })
+  }
 
   function buildSensorUrl(config: OrcaCoreConfig): string {
     return `ws://${config.host}:${config.port}/v1/sensors/full?interval=${config.sensorInterval}&ns=^(?!.*(ais))`
@@ -79,7 +92,7 @@ module.exports = (app: ServerAPI): Plugin => {
     ws.on('message', (raw: WebSocket.Data) => {
       try {
         const data: OrcaMessage = JSON.parse(raw.toString())
-        handleOrcaMessage(data, sink)
+        if (processor) handleOrcaMessage(data, sink, processor)
       } catch (e) {
         app.debug(`[${name}] Failed to parse message: ${e}`)
       }
@@ -133,6 +146,10 @@ module.exports = (app: ServerAPI): Plugin => {
     start: (settings: any) => {
       stopped = false
       cancelDiscovery = undefined
+      processor = new OrcaMessageProcessor(canTrackLocalAis ? {} : { aisMode: 'all' })
+      if (!canTrackLocalAis) {
+        app.debug('[start] Signal K delta input API unavailable; AIS mode forced to all')
+      }
 
       let aisInterval = settings.aisInterval || 5
       if (aisInterval > 120) {
@@ -201,6 +218,7 @@ module.exports = (app: ServerAPI): Plugin => {
 
     stop: () => {
       stopped = true
+      processor = undefined
       if (cancelDiscovery) {
         cancelDiscovery()
         cancelDiscovery = undefined
