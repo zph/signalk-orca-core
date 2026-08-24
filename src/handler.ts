@@ -44,6 +44,7 @@ export interface ProcessingStats {
   droppedInvalid: number
   suppressedUnchanged: number
   unsupportedRouteEnums: number
+  validationFailuresByField: Record<string, number>
 }
 
 export const DEFAULT_PROCESSING_OPTIONS: ProcessingOptions = {
@@ -167,7 +168,8 @@ export class OrcaMessageProcessor {
     droppedStale: 0,
     droppedInvalid: 0,
     suppressedUnchanged: 0,
-    unsupportedRouteEnums: 0
+    unsupportedRouteEnums: 0,
+    validationFailuresByField: {}
   }
 
   private readonly clock: () => number
@@ -191,7 +193,7 @@ export class OrcaMessageProcessor {
 
     for (const update of delta.updates) {
       const source = sourceName(update)
-      if (!source || source === 'signalk-orca-core') continue
+      if (!source || source === 'signalk-orca-core' || source.startsWith('signalk-orca-core.')) continue
       const timestamp = timestampMilliseconds(update.timestamp) ?? this.clock()
       if (!Array.isArray(update.values)) continue
 
@@ -223,10 +225,11 @@ export class OrcaMessageProcessor {
   handle(data: OrcaMessage, sink: MessageSink) {
     const values = data.values
     if (!values || Object.keys(values).length === 0) return
+    this.validateInput(values)
 
     const messageTimestamp = timestampMilliseconds(data.timestamp)
     if (messageTimestamp === undefined) {
-      this.stats.droppedInvalid += 1
+      this.countInvalid('message.timestamp')
       sink.debug('Dropped Orca message with invalid timestamp')
       return
     }
@@ -316,21 +319,30 @@ export class OrcaMessageProcessor {
       const timestamp = this.sourceTimestamp(data, [`${prefix}${field}`])
       if (timestamp === undefined || !this.withinAge(timestamp, this.options.aisStaticMaxAgeSeconds)) continue
       if (this.localWins(context, path, timestamp, true)) continue
+      const acceptedField = this.acceptValue(context, `@root:${path}`, value, timestamp, 'static')
+      if (!acceptedField) continue
       setNested(fragment, path, value)
       timestamps.push(timestamp)
     }
 
-    if (timestamps.length === 0 && acceptedDynamic.length === 0) return []
+    const dynamicTimestamp = acceptedDynamic.length > 0
+      ? Math.min(...acceptedDynamic.map((value) => value.timestamp))
+      : undefined
+    const identityTimestamp = timestamps.length > 0
+      ? Math.min(...timestamps)
+      : dynamicTimestamp
+    const identityAccepted = identityTimestamp !== undefined
+      ? this.acceptValue(context, '@identity', root.value.mmsi, identityTimestamp, 'static')
+      : undefined
+    if (timestamps.length === 0 && !identityAccepted) return []
     const timestamp = timestamps.length > 0
       ? Math.min(...timestamps)
-      : Math.min(...acceptedDynamic.map((value) => value.timestamp))
-    const accepted = this.acceptValue(context, '', fragment, timestamp, 'static')
-    if (!accepted) return []
-    if (Object.keys(fragment).length === 1 && acceptedDynamic.length === 0) {
+      : dynamicTimestamp!
+    if (Object.keys(fragment).length === 1 && !identityAccepted) {
       sink.debug('Suppressed identity-only AIS root fragment')
       return []
     }
-    return [accepted]
+    return [{ path: '', value: fragment, timestamp, valueClass: 'static' }]
   }
 
   private processValues(
@@ -369,14 +381,14 @@ export class OrcaMessageProcessor {
         continue
       }
       if (rawAge < -CLOCK_SKEW_TOLERANCE_MS) {
-        this.stats.droppedInvalid += 1
+        this.countInvalid(`${key}.values_age`)
         return undefined
       }
       const timestamp = messageTimestamp - Math.max(0, rawAge)
       oldest = Math.min(oldest, timestamp)
     }
     if (oldest > this.clock() + CLOCK_SKEW_TOLERANCE_MS) {
-      this.stats.droppedInvalid += 1
+      this.countInvalid('message.clockSkew')
       return undefined
     }
     return oldest
@@ -386,6 +398,32 @@ export class OrcaMessageProcessor {
     if (this.clock() - timestamp <= maximumAgeSeconds * 1000) return true
     this.stats.droppedStale += 1
     return false
+  }
+
+  private validateInput(values: Record<string, any>) {
+    const invalidIdentities = new Set<string>()
+    for (const [key, value] of Object.entries(values)) {
+      const identity = /^ais\.x\.([^.]+)\./.exec(key)?.[1]
+      if (identity && !/^\d{9}$/.test(identity)) invalidIdentities.add(identity)
+      if (typeof value === 'number' && !Number.isFinite(value)) {
+        this.countInvalid(key)
+        continue
+      }
+      if (/\.latitude$/.test(key) &&
+          (typeof value !== 'number' || value < -90 || value > 90)) this.countInvalid(key)
+      if (/\.longitude$/.test(key) &&
+          (typeof value !== 'number' || value < -180 || value > 180)) this.countInvalid(key)
+      if (/\.(?:SOG|speed|distance|beam|length|draft|voltage)$/.test(key) &&
+          typeof value === 'number' && value < 0) this.countInvalid(key)
+    }
+    for (const _identity of invalidIdentities) this.countInvalid('ais.x.<target>.identity')
+  }
+
+  private countInvalid(field: string) {
+    const normalized = field.replace(/ais\.x\.\d+/g, 'ais.x.<target>')
+    this.stats.droppedInvalid += 1
+    this.stats.validationFailuresByField[normalized] =
+      (this.stats.validationFailuresByField[normalized] ?? 0) + 1
   }
 
   private localWins(context: string, path: string, orcaTimestamp: number, isStatic: boolean): boolean {
@@ -449,20 +487,41 @@ export class OrcaMessageProcessor {
 
   private emit(context: string, values: TimedValue[], sink: MessageSink) {
     if (values.length === 0) return
-    const updates = new Map<number, Array<{ path: string, value: any }>>()
+    const grouped = new Map<number, Array<{ path: string, value: any }>>()
     for (const pathValue of values) {
-      const bucket = updates.get(pathValue.timestamp) ?? []
+      const bucket = grouped.get(pathValue.timestamp) ?? []
       bucket.push({ path: pathValue.path, value: pathValue.value })
-      updates.set(pathValue.timestamp, bucket)
+      grouped.set(pathValue.timestamp, bucket)
+    }
+    const updates: any[] = [...grouped.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([timestamp, groupedValues]) => ({
+        timestamp: new Date(timestamp).toISOString(),
+        values: groupedValues
+      }))
+    const extensionMetadata = values.flatMap(({ path }) => {
+      if (path === 'sensors.ais.class') {
+        return [{ path, value: { description: 'AIS class reported by Orca Core' } }]
+      }
+      if (path === 'sensors.ais.transceiverInformation') {
+        return [{
+          path,
+          value: {
+            description: 'Raw Orca/NMEA transceiver information enumeration; target provenance is not supplied by Orca Core'
+          }
+        }]
+      }
+      return []
+    })
+    if (extensionMetadata.length > 0) {
+      updates.push({
+        timestamp: new Date(Math.min(...values.map(({ timestamp }) => timestamp))).toISOString(),
+        meta: extensionMetadata
+      })
     }
     sink.handleMessage('signalk-orca-core', {
       context,
-      updates: [...updates.entries()]
-        .sort(([left], [right]) => left - right)
-        .map(([timestamp, groupedValues]) => ({
-          timestamp: new Date(timestamp).toISOString(),
-          values: groupedValues
-        }))
+      updates
     })
   }
 }

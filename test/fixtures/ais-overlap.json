@@ -1,0 +1,45 @@
+{
+  "local": {
+    "context": "vessels.urn:mrn:imo:mmsi:990000001",
+    "updates": [
+      {
+        "timestamp": "2026-08-23T11:59:30.000Z",
+        "$source": "local-ais-sdr.AI",
+        "values": [
+          {
+            "path": "navigation.position",
+            "value": {
+              "latitude": 41,
+              "longitude": -121
+            }
+          },
+          {
+            "path": "navigation.speedOverGround",
+            "value": 2.5
+          },
+          {
+            "path": "",
+            "value": {
+              "name": "SANITIZED LOCAL TARGET"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "orca": {
+    "timestamp": "2026-08-23T12:00:00.000Z",
+    "values": {
+      "ais.x.990000001.position.latitude": 40.01,
+      "ais.x.990000001.position.longitude": -120.01,
+      "ais.x.990000001.position.SOG": 3,
+      "ais.x.990000001.position.name": "SANITIZED ORCA TARGET"
+    },
+    "values_age": {
+      "ais.x.990000001.position.latitude": 1000,
+      "ais.x.990000001.position.longitude": 1000,
+      "ais.x.990000001.position.SOG": 1000,
+      "ais.x.990000001.position.name": 60000
+    }
+  }
+}

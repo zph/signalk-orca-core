@@ -123,6 +123,22 @@ describe('mapOrcaValues', () => {
     expect(result).toEqual([])
   })
 
+  it('isolates malformed sensor fields without losing valid siblings', () => {
+    const result = mapOrcaValues({
+      'environment.depth.10.belowTransducer': -1,
+      'environment.depth.20.belowTransducer': 8.2,
+      'environment.attitude.254.roll': 'not-a-number',
+      'environment.attitude.254.pitch': 0.1,
+      'navigation.cogsog.254.speed': Number.NaN,
+      'navigation.cogsog.254.course': 1.2,
+    })
+
+    expect(result).toContainEqual({ path: 'environment.depth.belowTransducer', value: 8.2 })
+    expect(result).toContainEqual({ path: 'navigation.attitude', value: { pitch: 0.1 } })
+    expect(result).toContainEqual({ path: 'navigation.courseOverGroundTrue', value: 1.2 })
+    expect(result.some(({ path }) => path === 'navigation.speedOverGround')).toBe(false)
+  })
+
   it('handles a full realistic message with multiple sensor values', () => {
     const result = mapOrcaValues({
       'navigation.position.254.latitude': 60.1,
@@ -277,6 +293,17 @@ describe('mapOrcaValues', () => {
       path: 'electrical.batteries.225_1.capacity.stateOfCharge',
       value: 0.75
     })
+  })
+
+  it('maps source-qualified atmospheric pressure only when duplicate sensors are enabled', () => {
+    const values = {
+      'environment.pressure.128.pressure': 101325,
+      'environment.pressure.128.source': 0,
+    }
+    expect(mapOrcaValues(values)).toEqual([])
+    expect(mapOrcaValues(values, undefined, { mapDuplicateSensors: true })).toEqual([
+      { path: 'environment.outside.pressure', value: 101325 }
+    ])
   })
 
   it.each([

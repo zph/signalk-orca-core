@@ -226,4 +226,64 @@ describe('OrcaMessageProcessor timestamps and suppression', () => {
     const secondValues = output.handleMessage.mock.calls[1][1].updates[0].values
     expect(secondValues).toContainEqual({ path: 'navigation.speedOverGround', value: 3.5 })
   })
+
+  it('tracks validation failures by sanitized field name', () => {
+    const now = Date.parse('2026-08-23T12:00:00Z')
+    const processor = new OrcaMessageProcessor({}, () => now)
+    processor.handle({
+      timestamp: new Date(now).toISOString(),
+      values: {
+        'ais.x.12345.position.latitude': 200,
+        'ais.x.12345.position.SOG': -1
+      }
+    }, sink())
+
+    expect(processor.stats.validationFailuresByField).toMatchObject({
+      'ais.x.<target>.identity': 1,
+      'ais.x.<target>.position.latitude': 1,
+      'ais.x.<target>.position.SOG': 1
+    })
+  })
+
+  it('does not let an older new static sibling block a newer static change', () => {
+    let now = Date.parse('2026-08-23T12:00:00Z')
+    const processor = new OrcaMessageProcessor({}, () => now)
+    const output = sink()
+    processor.handle({
+      timestamp: new Date(now).toISOString(),
+      values: {
+        [`ais.x.${MMSI}.position.name`]: 'FIRST',
+        [`ais.x.${MMSI}.position.callsign`]: 'CALL'
+      },
+      values_age: {
+        [`ais.x.${MMSI}.position.name`]: 10_000,
+        [`ais.x.${MMSI}.position.callsign`]: 20_000
+      }
+    }, output)
+
+    now += 1000
+    processor.handle({
+      timestamp: new Date(now).toISOString(),
+      values: {
+        [`ais.x.${MMSI}.position.name`]: 'SECOND',
+        [`ais.x.${MMSI}.position.callsign`]: 'CALL',
+        [`ais.x.${MMSI}.position.destination`]: 'OLDER NEW FIELD'
+      },
+      values_age: {
+        [`ais.x.${MMSI}.position.name`]: 0,
+        [`ais.x.${MMSI}.position.callsign`]: 21_000,
+        [`ais.x.${MMSI}.position.destination`]: 30_000
+      }
+    }, output)
+
+    const secondRoot = output.handleMessage.mock.calls[1][1].updates[0].values[0]
+    expect(secondRoot).toEqual({
+      path: '',
+      value: {
+        mmsi: MMSI,
+        name: 'SECOND',
+        navigation: { destination: { commonName: 'OLDER NEW FIELD' } }
+      }
+    })
+  })
 })

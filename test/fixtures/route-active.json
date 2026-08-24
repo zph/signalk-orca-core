@@ -1,0 +1,29 @@
+{
+  "timestamp": "2026-08-23T12:00:00.000Z",
+  "values": {
+    "navigation.data.254.calculationType": 1,
+    "navigation.data.254.bearingReference": 1,
+    "navigation.data.254.latitude": 47.6,
+    "navigation.data.254.longitude": -122.4,
+    "navigation.data.254.distance": 1200,
+    "navigation.data.254.bearingFromPosition": 1.25,
+    "navigation.data.254.bearingFromOrigin": 1.2,
+    "navigation.data.254.velocity": 2.8,
+    "navigation.data.254.etaDate": 20690,
+    "navigation.data.254.etaTime": 45000,
+    "navigation.xte.254.xte": 4.2
+  },
+  "values_age": {
+    "navigation.data.254.calculationType": 250,
+    "navigation.data.254.bearingReference": 500,
+    "navigation.data.254.latitude": 750,
+    "navigation.data.254.longitude": 1000,
+    "navigation.data.254.distance": 1250,
+    "navigation.data.254.bearingFromPosition": 1500,
+    "navigation.data.254.bearingFromOrigin": 1750,
+    "navigation.data.254.velocity": 2000,
+    "navigation.data.254.etaDate": 2250,
+    "navigation.data.254.etaTime": 2500,
+    "navigation.xte.254.xte": 2750
+  }
+}

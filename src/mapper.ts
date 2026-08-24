@@ -77,6 +77,11 @@ function aisAngle(value: unknown): number | undefined {
   return angle !== undefined && angle >= 0 && angle < TWO_PI ? angle : undefined
 }
 
+function signedAngle(value: unknown): number | undefined {
+  const angle = finiteNumber(value)
+  return angle !== undefined && angle >= -TWO_PI && angle < TWO_PI ? angle : undefined
+}
+
 function rfc3339(value: unknown): string | undefined {
   const text = aisString(value, 64)
   if (!text || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(text)) {
@@ -212,7 +217,7 @@ export function mapAisValues(
       ))
     }
 
-    if (debug) debug(`AIS ${mmsi} → ${pv.length} values`)
+    if (debug) debug(`AIS target → ${pv.length} mapped values`)
 
     if (pv.length > 1 || Object.keys(staticFragment).length > 1) {
       result.push({
@@ -236,11 +241,16 @@ export function mapOrcaValues(
   const keys = Object.keys(values)
 
   /** Find the first key matching `prefix.<any segments>.suffix` and return its value */
-  function firstMatch(prefix: string, suffix: string): { key: string, value: any } | undefined {
+  function firstMatch(
+    prefix: string,
+    suffix: string,
+    valid: (value: any) => boolean = () => true
+  ): { key: string, value: any } | undefined {
     const pat = `${prefix}.`
     const end = `.${suffix}`
     for (const k of keys) {
-      if (k.startsWith(pat) && k.endsWith(end) && k.length > pat.length + end.length) {
+      if (k.startsWith(pat) && k.endsWith(end) &&
+          k.length > pat.length + end.length && valid(values[k])) {
         return { key: k, value: values[k] }
       }
     }
@@ -252,13 +262,13 @@ export function mapOrcaValues(
     result.push(mappedValue(skPath, value, Array.isArray(orcaKeys) ? orcaKeys : [orcaKeys]))
     if (debug) {
       const from = Array.isArray(orcaKeys) ? orcaKeys.join(' + ') : orcaKeys
-      debug(`${from} → ${skPath} = ${JSON.stringify(value)}`)
+      debug(`${from} → ${skPath}`)
     }
   }
 
   function validMappedValue(value: any): boolean {
     if (typeof value === 'number') return Number.isFinite(value)
-    if (typeof value === 'string') return value.length > 0
+    if (typeof value === 'string') return rfc3339(value) !== undefined
     if (!value || typeof value !== 'object') return false
     return Object.values(value).every(validMappedValue)
   }
@@ -285,39 +295,52 @@ export function mapOrcaValues(
     emit('navigation.cogsog.254.speed', 'navigation.speedOverGround', nonNegative('navigation.cogsog.254.speed'))
   }
   if (v('navigation.cogsog.254.course') != null) {
-    emit('navigation.cogsog.254.course', 'navigation.courseOverGroundTrue', v('navigation.cogsog.254.course'))
+    const course = aisAngle(v('navigation.cogsog.254.course'))
+    if (course !== undefined) {
+      emit('navigation.cogsog.254.course', 'navigation.courseOverGroundTrue', course)
+    }
   }
 
   // Heading (reference=1 means magnetic)
   if (v('navigation.heading.254.heading') != null) {
-    emit('navigation.heading.254.heading', 'navigation.headingMagnetic', v('navigation.heading.254.heading'))
+    const heading = aisAngle(v('navigation.heading.254.heading'))
+    if (heading !== undefined) {
+      emit('navigation.heading.254.heading', 'navigation.headingMagnetic', heading)
+    }
   }
-  if (v('navigation.heading.254.variation') != null) {
-    emit('navigation.heading.254.variation', 'navigation.magneticVariation', v('navigation.heading.254.variation'))
+  const headingVariation = signedAngle(v('navigation.heading.254.variation'))
+  const fallbackVariation = signedAngle(v('navigation.magvar.254.variation'))
+  if (headingVariation !== undefined) {
+    emit('navigation.heading.254.variation', 'navigation.magneticVariation', headingVariation)
+  } else if (fallbackVariation !== undefined) {
+    emit('navigation.magvar.254.variation', 'navigation.magneticVariation', fallbackVariation)
   }
 
   // Rate of turn
   if (v('navigation.rot.254.rot') != null) {
-    emit('navigation.rot.254.rot', 'navigation.rateOfTurn', v('navigation.rot.254.rot'))
+    const rate = finiteNumber(v('navigation.rot.254.rot'))
+    if (rate !== undefined) emit('navigation.rot.254.rot', 'navigation.rateOfTurn', rate)
   }
 
   // Datetime
   if (v('navigation.time.254.datetime') != null) {
-    emit('navigation.time.254.datetime', 'navigation.datetime', v('navigation.time.254.datetime'))
+    const datetime = rfc3339(v('navigation.time.254.datetime'))
+    if (datetime) emit('navigation.time.254.datetime', 'navigation.datetime', datetime)
   }
 
   // GNSS
-  if (v('navigation.gnss.254.satellites') != null) {
-    emit('navigation.gnss.254.satellites', 'navigation.gnss.satellites', v('navigation.gnss.254.satellites'))
+  if (nonNegative('navigation.gnss.254.satellites') !== undefined) {
+    emit('navigation.gnss.254.satellites', 'navigation.gnss.satellites', nonNegative('navigation.gnss.254.satellites'))
   }
-  if (v('navigation.gnss.254.HDOP') != null) {
-    emit('navigation.gnss.254.HDOP', 'navigation.gnss.horizontalDilution', v('navigation.gnss.254.HDOP'))
+  if (nonNegative('navigation.gnss.254.HDOP') !== undefined) {
+    emit('navigation.gnss.254.HDOP', 'navigation.gnss.horizontalDilution', nonNegative('navigation.gnss.254.HDOP'))
   }
-  if (v('navigation.gnss.254.PDOP') != null) {
-    emit('navigation.gnss.254.PDOP', 'navigation.gnss.positionDilution', v('navigation.gnss.254.PDOP'))
+  if (nonNegative('navigation.gnss.254.PDOP') !== undefined) {
+    emit('navigation.gnss.254.PDOP', 'navigation.gnss.positionDilution', nonNegative('navigation.gnss.254.PDOP'))
   }
   if (v('navigation.gnss.254.altitude') != null) {
-    emit('navigation.gnss.254.altitude', 'navigation.gnss.antennaAltitude', v('navigation.gnss.254.altitude'))
+    const altitude = finiteNumber(v('navigation.gnss.254.altitude'))
+    if (altitude !== undefined) emit('navigation.gnss.254.altitude', 'navigation.gnss.antennaAltitude', altitude)
   }
 
   // Cross-track error
@@ -369,7 +392,7 @@ export function mapOrcaValues(
 
     const bearingReference = finiteNumber(v(`${routePrefix}bearingReference`))
     const bearingSuffix = bearingReference === 0 ? 'True' : bearingReference === 1 ? 'Magnetic' : undefined
-    const bearingFromPosition = finiteNumber(v(`${routePrefix}bearingFromPosition`))
+    const bearingFromPosition = aisAngle(v(`${routePrefix}bearingFromPosition`))
     if (bearingSuffix && bearingFromPosition !== undefined) {
       emit(
         [`${routePrefix}bearingFromPosition`, `${routePrefix}bearingReference`, calculationKey],
@@ -377,7 +400,7 @@ export function mapOrcaValues(
         bearingFromPosition
       )
     }
-    const bearingFromOrigin = finiteNumber(v(`${routePrefix}bearingFromOrigin`))
+    const bearingFromOrigin = aisAngle(v(`${routePrefix}bearingFromOrigin`))
     if (bearingSuffix && bearingFromOrigin !== undefined) {
       emit(
         [`${routePrefix}bearingFromOrigin`, `${routePrefix}bearingReference`, calculationKey],
@@ -411,21 +434,21 @@ export function mapOrcaValues(
 
   // --- Attitude (device 254, compound) ---
 
-  const roll = v('environment.attitude.254.roll')
-  const pitch = v('environment.attitude.254.pitch')
-  const yaw = v('environment.attitude.254.yaw')
-  if (roll != null || pitch != null || yaw != null) {
+  const roll = finiteNumber(v('environment.attitude.254.roll'))
+  const pitch = finiteNumber(v('environment.attitude.254.pitch'))
+  const yaw = finiteNumber(v('environment.attitude.254.yaw'))
+  if (roll !== undefined || pitch !== undefined || yaw !== undefined) {
     const attitude: Record<string, number> = {}
     const attitudeKeys: string[] = []
-    if (roll != null) {
+    if (roll !== undefined) {
       attitude.roll = roll
       attitudeKeys.push('environment.attitude.254.roll')
     }
-    if (pitch != null) {
+    if (pitch !== undefined) {
       attitude.pitch = pitch
       attitudeKeys.push('environment.attitude.254.pitch')
     }
-    if (yaw != null) {
+    if (yaw !== undefined) {
       attitude.yaw = yaw
       attitudeKeys.push('environment.attitude.254.yaw')
     }
@@ -443,7 +466,8 @@ export function mapOrcaValues(
     emit('environment.wind.254.2.speed', 'environment.wind.speedApparent', nonNegative('environment.wind.254.2.speed'))
   }
   if (v('environment.wind.254.2.angle') != null) {
-    emit('environment.wind.254.2.angle', 'environment.wind.angleApparent', v('environment.wind.254.2.angle'))
+    const angle = signedAngle(v('environment.wind.254.2.angle'))
+    if (angle !== undefined) emit('environment.wind.254.2.angle', 'environment.wind.angleApparent', angle)
   }
 
   // Instance 0: True wind (ground reference)
@@ -453,12 +477,14 @@ export function mapOrcaValues(
     emit('environment.wind.254.0.speed', 'environment.wind.speedTrue', nonNegative('environment.wind.254.0.speed'))
   }
   if (v('environment.wind.254.0.angle') != null) {
-    emit('environment.wind.254.0.angle', 'environment.wind.angleTrueGround', v('environment.wind.254.0.angle'))
+    const angle = signedAngle(v('environment.wind.254.0.angle'))
+    if (angle !== undefined) emit('environment.wind.254.0.angle', 'environment.wind.angleTrueGround', angle)
   }
 
   // Instance 3: True wind (boat/water reference)
   if (v('environment.wind.254.3.angle') != null) {
-    emit('environment.wind.254.3.angle', 'environment.wind.angleTrueWater', v('environment.wind.254.3.angle'))
+    const angle = signedAngle(v('environment.wind.254.3.angle'))
+    if (angle !== undefined) emit('environment.wind.254.3.angle', 'environment.wind.angleTrueWater', angle)
   }
   if (mappingOptions.trueWindSpeedReference === 'water' &&
       nonNegative('environment.wind.254.3.speed') !== undefined) {
@@ -468,19 +494,25 @@ export function mapOrcaValues(
   // --- Sensor-only data (no device 254 equivalent) ---
 
   // Depth (any device)
-  const depthBelow = firstMatch('environment.depth', 'belowTransducer')
+  const depthBelow = firstMatch(
+    'environment.depth', 'belowTransducer', (value) => nonNegativeNumber(value) !== undefined
+  )
   if (depthBelow) {
-    emit(depthBelow.key, 'environment.depth.belowTransducer', depthBelow.value)
+    emit(depthBelow.key, 'environment.depth.belowTransducer', nonNegativeNumber(depthBelow.value))
   }
-  const depthOffset = firstMatch('environment.depth', 'offset')
+  const depthOffset = firstMatch(
+    'environment.depth', 'offset', (value) => finiteNumber(value) !== undefined
+  )
   if (depthOffset) {
-    emit(depthOffset.key, 'environment.depth.transducerToKeel', depthOffset.value)
+    emit(depthOffset.key, 'environment.depth.transducerToKeel', finiteNumber(depthOffset.value))
   }
 
   // Water speed (any device)
-  const waterSpeed = firstMatch('environment.waterSpeed', 'speed')
+  const waterSpeed = firstMatch(
+    'environment.waterSpeed', 'speed', (value) => nonNegativeNumber(value) !== undefined
+  )
   if (waterSpeed) {
-    emit(waterSpeed.key, 'navigation.speedThroughWater', waterSpeed.value)
+    emit(waterSpeed.key, 'navigation.speedThroughWater', nonNegativeNumber(waterSpeed.value))
   }
 
   // Temperature source is scoped to the exact device and instance.
@@ -505,12 +537,31 @@ export function mapOrcaValues(
   }
 
   // Rudder (any device, any instance)
-  const rudder = firstMatch('steering.rudder', 'position')
+  const rudder = firstMatch(
+    'steering.rudder', 'position', (value) => finiteNumber(value) !== undefined
+  )
   if (rudder) {
-    emit(rudder.key, 'steering.rudderAngle', rudder.value)
+    emit(rudder.key, 'steering.rudderAngle', finiteNumber(rudder.value))
   }
 
   if (mappingOptions.mapDuplicateSensors) {
+    const pressureRegex = /^environment\.pressure\.([^.]+)(?:\.([^.]+))?\.pressure$/
+    for (const key of keys) {
+      const match = pressureRegex.exec(key)
+      if (!match) continue
+      const [, device, instance] = match
+      const prefix = `environment.pressure.${device}${instance ? `.${instance}` : ''}`
+      const sourceKey = `${prefix}.source`
+      const pressure = nonNegativeNumber(v(key))
+      const source = finiteNumber(v(sourceKey))
+      if (pressure === undefined || source === undefined) continue
+      if (source === 0) {
+        emit([key, sourceKey], 'environment.outside.pressure', pressure)
+      } else if (mappingOptions.publishOrcaExtensions) {
+        emit([key, sourceKey], `environment.orca.pressure.${device}${instance ? `.${instance}` : ''}`, pressure)
+      }
+    }
+
     const batteryRegex = /^battery\.([^.]+)\.([^.]+)\.(voltage|current|charge|stateOfCharge|timeRemaining)$/
     for (const key of keys) {
       const match = batteryRegex.exec(key)
@@ -518,6 +569,8 @@ export function mapOrcaValues(
       const [, device, instance, field] = match
       const value = finiteNumber(v(key))
       if (value === undefined) continue
+      if (field !== 'current' && value < 0) continue
+      if ((field === 'charge' || field === 'stateOfCharge') && value > 1) continue
       const battery = `electrical.batteries.${device}_${instance}`
       const suffix = field === 'charge' || field === 'stateOfCharge'
         ? 'capacity.stateOfCharge'
