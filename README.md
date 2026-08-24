@@ -1,29 +1,25 @@
 # signalk-orca-core
 
-[Github repo]https://github.com/trondhindenes/signalk-orca-core
+A Signal K server plugin that ingests sensor, route, and supplemental AIS data from an [Orca Core](https://www.orcamarine.com/) over WebSockets.
 
-A [SignalK](https://signalk.org/) server plugin that ingests sensor data from an [Orca Core](https://www.orcamarine.com/) device via WebSocket and maps it to SignalK paths.
+> This is an independent community plugin. It is not affiliated with, endorsed by, or supported by Orca Marine Systems.
 
-> **Disclaimer:** This is an independent, community-developed plugin. It is **not** affiliated with, endorsed by, or supported by Orca Marine Systems (the makers of Orca Core and the Orca app). Use at your own risk.
+## Highlights
 
-## Features
+- Auto-discovers Orca Core via mDNS, with a configured-host fallback.
+- Reconstructs source timestamps from Orca `values_age` and rejects stale data.
+- Suppresses unchanged full snapshots while retaining a configurable heartbeat.
+- Adds Orca-only AIS targets without replacing fresh onboard AIS in `supplemental` mode.
+- Emits AIS static data as collision-safe root fragments, including VHF callsigns.
+- Maps active route/next-waypoint data, processed XTE, ground/water wind, depth offset, and source-aware temperatures.
+- Reports aggregate target, overlap, suppression, stale, invalid, and unchanged counters in plugin status.
 
-- Connects to Orca Core's WebSocket API (sensors, AIS, sync streams)
-- Auto-discovers Orca Core on the local network via mDNS
-- Maps Orca Core's flat sensor data to structured SignalK paths
-- Uses Orca-processed data (device 254) where available for best accuracy
-- Debug logging of all mappings via SignalK's plugin log facility
+Orca Core does not expose target-level traffic provenance through the observed WebSocket API. The plugin therefore identifies its source as `signalk-orca-core` / “Orca Core AIS (provenance not supplied by Core)” and never labels individual targets as MarineTraffic.
 
 ## Installation
 
-### From npm (SignalK Appstore)
+From the Signal K Appstore, search for “signalk-orca-core”. For development:
 
-Search for "signalk-orca-core" in the SignalK Appstore (Server > Appstore in the admin UI).
-
-### Manual / Development
-
-First, clone repo from https://github.com/trondhindenes/signalk-orca-core
-Then, in the cloned repo:
 ```bash
 npm install
 npm run build
@@ -33,20 +29,81 @@ cd ~/.signalk
 npm link signalk-orca-core
 ```
 
-Restart SignalK server, then enable the plugin in Server > Plugin Config.
+Restart Signal K, then enable the plugin under Server > Plugin Config.
 
 ## Configuration
 
+Existing settings are preserved. A legacy `aisInterval` greater than 120 is treated as milliseconds, converted to seconds, and saved.
+
 | Setting | Default | Description |
-|---|---|---|
-| Auto-discover via mDNS | `true` | Automatically find Orca Core on the network |
-| Discovery Timeout | `30` s | How long to search before falling back |
-| Host | *(empty)* | Fallback host (or primary when auto-discover is off) |
-| Port | `8089` | Orca Core WebSocket port |
-| Sensor Interval | `200` ms | Sensor data update interval |
-| Enable AIS data | `true` | Subscribe to the AIS stream and emit per-target SignalK deltas |
-| AIS Interval | `5` s | AIS data update interval (whole seconds) |
-| Sync Ping Interval | `45` s | Keep-alive ping interval on sync connection (not normally changed) |
+|---|---:|---|
+| `autoDiscover` | `true` | Discover Orca Core with mDNS. |
+| `discoveryTimeout` | `30` | Discovery timeout in seconds. |
+| `host` | `10.11.12.1` | Fallback host, or primary host when discovery is disabled. |
+| `port` | `8089` | Orca Core WebSocket port. |
+| `sensorInterval` | `200` | Requested sensor snapshot interval in milliseconds. |
+| `enableSensors` | `true` | Enable the non-AIS sensor stream. |
+| `emitOnlyChanges` | `true` | Suppress unchanged canonical values. |
+| `heartbeatSeconds` | `30` | Re-emit unchanged dynamic data after its source timestamp advances this far. |
+| `sensorMaxAgeSeconds` | `10` | Maximum age for real-time own-vessel data. |
+| `enableAis` | `true` | Legacy AIS enable switch; `false` forces AIS off. |
+| `aisMode` | `supplemental` | `supplemental`, `all`, or `off`. |
+| `aisInterval` | `5` | Requested AIS snapshot interval in seconds. |
+| `aisDynamicMaxAgeSeconds` | `900` | Maximum age for AIS position, COG, SOG, and heading. |
+| `aisStaticMaxAgeSeconds` | `86400` | Maximum age for AIS static fields. |
+| `aisTargetExpirySeconds` | `1800` | Stop refreshing targets whose dynamics exceed this age. |
+| `localAisFreshnessSeconds` | `360` | How long matching onboard dynamic AIS remains authoritative. |
+| `localAisSourcePatterns` | `local-ais-sdr.*`, `n2k-*` | Sources treated as onboard AIS. |
+| `enableRouteData` | `true` | Publish valid active-route and next-waypoint values. |
+| `routeInactivePolicy` | `suppress` | `suppress` zero-filled inactive routes or `publish-zeroes`. |
+| `mapDuplicateSensors` | `false` | Opt into generic duplicate data such as instance-preserving batteries. |
+| `trueWindSpeedReference` | `existing` | `existing`, `ground`, or `water`. |
+| `publishOrcaExtensions` | `false` | Publish documented non-standard Orca diagnostic paths. |
+| `syncPingInterval` | `45` | Sync-stream keepalive interval in seconds. |
+
+Source patterns are case-sensitive globs. `*` matches zero or more characters; every other character is literal. For example, `n2k-*` matches `n2k-onboard.AI`, while `local-ais-sdr.*` matches `local-ais-sdr.AI`.
+
+`supplemental` mode requires Signal K's delta-input inspection API. If that API is unavailable, the plugin explicitly reports the limitation and uses `all`; it does not claim to enforce local precedence. `off` and `enableAis=false` both prevent the AIS WebSocket from opening.
+
+For true wind speed, `ground` selects Orca instance 0, `water` selects instance 3, and `existing` uses instance 0 only when a fresh direct `environment.wind.speedTrue` is not present. The effective choice is included in plugin status.
+
+## Mapped data
+
+Own-vessel mappings include:
+
+| Orca Core | Signal K |
+|---|---|
+| `navigation.position.254.*` | `navigation.position` |
+| `navigation.cogsog.254.*` | `navigation.speedOverGround`, `navigation.courseOverGroundTrue` |
+| `navigation.heading.254.*` | `navigation.headingMagnetic`, `navigation.magneticVariation` |
+| `navigation.rot.254.rot` | `navigation.rateOfTurn` |
+| `navigation.gnss.254.*` | quality, dilution, satellite, and altitude paths |
+| `navigation.xte.254.xte` | active great-circle/rhumbline `crossTrackError` |
+| `navigation.data.254.*` | active course `nextPoint.*`, bearing track, VMG, and ETA |
+| `environment.attitude.254.*` | `navigation.attitude` |
+| `environment.wind.254.2.*` | apparent wind |
+| `environment.wind.254.0.*` | true-ground wind |
+| `environment.wind.254.3.*` | true-water wind |
+| `environment.depth.<device>.*` | depth below transducer and transducer-to-keel offset |
+| `environment.temperature.<device>.<instance>.*` | water, outside, or instance-preserving inside temperature selected by the matching source enum |
+| `battery.<device>.<instance>.*` | instance-preserving batteries when duplicate mapping is enabled |
+
+Inactive zero-filled routes, unsupported calculation enums, unknown temperature sources, and duplicate raw sensor groups are suppressed by default. Numeric NMEA waypoint identifiers are not represented as Signal K resource links.
+
+### AIS targets
+
+Targets use `vessels.urn:mrn:imo:mmsi:<MMSI>`. Dynamic paths are `navigation.position`, `navigation.courseOverGroundTrue`, `navigation.speedOverGround`, and `navigation.headingTrue`. Static name, callsign, type, beam, length, draft, destination, and ETA are merged through a root-object fragment so an existing primitive `communication.callsignVhf` cannot trigger the Signal K full-model metadata exception.
+
+`sensors.ais.class` is retained as a documented extension. With Orca extensions enabled, the misspelled input `tranceiverInfo` is exposed as `sensors.ais.transceiverInformation` with metadata describing it as a raw Orca/NMEA enumeration, not source provenance.
+
+## Development
+
+```bash
+npm test
+npm run build
+```
+
+Sanitized fixtures cover the observed 95-field sensor shape, a 63-target AIS snapshot, differing per-field ages, local/Orca overlap, and active/inactive routes. Tests also run the old and new callsign mappings through Signal K's full-model implementation.
 
 ## Docker
 
@@ -55,73 +112,8 @@ npm run build
 docker compose up -d
 ```
 
-The SignalK admin UI will be available at `http://localhost:3000`.
-
-## Mapped Data
-
-The plugin maps the following Orca Core data to SignalK paths:
-
-| Orca Core | SignalK |
-|---|---|
-| `navigation.position.254.*` | `navigation.position` |
-| `navigation.cogsog.254.speed` | `navigation.speedOverGround` |
-| `navigation.cogsog.254.course` | `navigation.courseOverGroundTrue` |
-| `navigation.heading.254.heading` | `navigation.headingMagnetic` |
-| `navigation.heading.254.variation` | `navigation.magneticVariation` |
-| `navigation.rot.254.rot` | `navigation.rateOfTurn` |
-| `navigation.time.254.datetime` | `navigation.datetime` |
-| `navigation.gnss.254.*` | `navigation.gnss.*` |
-| `navigation.xte.254.xte` | `navigation.courseRhumbline.crossTrackError` |
-| `environment.attitude.254.*` | `navigation.attitude` |
-| `environment.wind.254.2.*` | `environment.wind.speedApparent` / `angleApparent` |
-| `environment.wind.254.0.*` | `environment.wind.speedTrue` / `angleTrueGround` |
-| `environment.wind.254.3.*` | `environment.wind.angleTrueWater` |
-| `environment.depth.<any>.*` | `environment.depth.belowTransducer` / `transducerToKeel` |
-| `environment.waterSpeed.<any>.speed` | `navigation.speedThroughWater` |
-| `environment.temperature.<any>.<any>.*` | `environment.water.temperature` |
-| `steering.rudder.<any>.<any>.position` | `steering.rudderAngle` |
-| `battery.254.0.voltage` | `electrical.batteries.0.voltage` |
-
-### AIS targets
-
-Each AIS target is emitted as a separate SignalK vessel under context `vessels.urn:mrn:imo:mmsi:<MMSI>`. Mapping (Orca `ais.x.<MMSI>.position.*` → SignalK):
-
-| Orca field | SignalK path |
-|---|---|
-| `latitude` + `longitude` | `navigation.position` |
-| `COG` | `navigation.courseOverGroundTrue` |
-| `SOG` | `navigation.speedOverGround` |
-| `headingTrue` | `navigation.headingTrue` |
-| `name` | root (`{ name }`) |
-| `callsign` | `communication.callsignVhf` |
-| `vesselType` | `design.aisShipType` (`{ id }`) |
-| `beam` | `design.beam` |
-| `length` | `design.length` (`{ overall }`) |
-| `draft` | `design.draft` (`{ current }`) |
-| `destination` | `navigation.destination.commonName` |
-| `eta` | `navigation.destination.eta` |
-| `class` | `sensors.ais.class` |
+The Signal K admin UI is available at `http://localhost:3000`.
 
 ## License
 
-MIT License
-
-Copyright (c) 2026 Trond Hindenes
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+MIT License. Copyright (c) 2026 Trond Hindenes.

@@ -24,7 +24,7 @@ describe('handleOrcaMessage', () => {
     expect(sink.handleMessage).toHaveBeenCalledWith('signalk-orca-core', {
       context: 'vessels.self',
       updates: [{
-        timestamp: '2026-04-07T12:00:00Z',
+        timestamp: '2026-04-07T12:00:00.000Z',
         values: [
           { path: 'navigation.position', value: { latitude: 59.9, longitude: 10.7 } }
         ]
@@ -46,7 +46,7 @@ describe('handleOrcaMessage', () => {
     expect(sink.handleMessage).toHaveBeenCalledWith('signalk-orca-core', {
       context: 'vessels.self',
       updates: [{
-        timestamp: '2026-04-07T12:00:00Z',
+        timestamp: '2026-04-07T12:00:00.000Z',
         values: [
           { path: 'environment.wind.speedApparent', value: 7.2 },
           { path: 'environment.wind.angleApparent', value: 0.8 }
@@ -73,15 +73,15 @@ describe('handleOrcaMessage', () => {
     expect(sink.handleMessage).toHaveBeenCalledOnce()
     const delta = sink.handleMessage.mock.calls[0][1]
     expect(delta.context).toBe('vessels.self')
-    expect(delta.updates[0].timestamp).toBe('2026-04-07T12:01:00Z')
+    expect(delta.updates[0].timestamp).toBe('2026-04-07T12:01:00.000Z')
 
     const values = delta.updates[0].values
-    expect(values).toHaveLength(5)
+    expect(values).toHaveLength(4)
     expect(values).toContainEqual({ path: 'navigation.position', value: { latitude: 60.0, longitude: 11.0 } })
     expect(values).toContainEqual({ path: 'navigation.speedOverGround', value: 3.1 })
     expect(values).toContainEqual({ path: 'navigation.headingMagnetic', value: 1.57 })
     expect(values).toContainEqual({ path: 'environment.depth.belowTransducer', value: 15.2 })
-    expect(values).toContainEqual({ path: 'electrical.batteries.0.voltage', value: 12.6 })
+    expect(values.some((value: any) => value.path.startsWith('electrical.batteries.'))).toBe(false)
   })
 
   it('does not call handleMessage when values is empty', () => {

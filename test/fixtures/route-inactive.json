@@ -1,0 +1,15 @@
+{
+  "timestamp": "2026-08-23T12:00:00.000Z",
+  "values": {
+    "navigation.data.254.calculationType": 0,
+    "navigation.data.254.bearingReference": 0,
+    "navigation.data.254.latitude": 0,
+    "navigation.data.254.longitude": 0,
+    "navigation.data.254.distance": 0,
+    "navigation.data.254.bearingFromPosition": 0,
+    "navigation.data.254.bearingFromOrigin": 0,
+    "navigation.data.254.velocity": 0,
+    "navigation.data.254.etaDate": 0,
+    "navigation.data.254.etaTime": 0
+  }
+}
