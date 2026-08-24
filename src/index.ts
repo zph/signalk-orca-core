@@ -39,17 +39,6 @@ module.exports = (app: ServerAPI): Plugin => {
   const connectedStreams = new Set<string>()
   const canTrackLocalAis = typeof (app as any).registerDeltaInputHandler === 'function'
 
-  if (canTrackLocalAis) {
-    ;(app as any).registerDeltaInputHandler((delta: any, next: (delta: any) => void) => {
-      try {
-        processor?.recordExternalDelta(delta)
-      } catch (error) {
-        app.debug(`[AIS precedence] Failed to inspect delta: ${error}`)
-      }
-      next(delta)
-    })
-  }
-
   function buildSensorUrl(config: OrcaCoreConfig): string {
     return `ws://${config.host}:${config.port}/v1/sensors/full?interval=${config.sensorInterval}&ns=^(?!.*(ais))`
   }
@@ -243,6 +232,21 @@ module.exports = (app: ServerAPI): Plugin => {
       }
       activeConfig = config
       processor = new OrcaMessageProcessor(config)
+
+      // Signal K cannot associate lifecycle cleanup with this handler until
+      // the plugin factory has returned its plugin object. Registering during
+      // factory construction crashes older server releases (including Venus
+      // OS) because their plugin wrapper has not assigned plugin.id yet.
+      if (canTrackLocalAis) {
+        ;(app as any).registerDeltaInputHandler((delta: any, next: (delta: any) => void) => {
+          try {
+            processor?.recordExternalDelta(delta)
+          } catch (error) {
+            app.debug(`[AIS precedence] Failed to inspect delta: ${error}`)
+          }
+          next(delta)
+        })
+      }
 
       const connect = (cfg: OrcaCoreConfig) => {
         if (cfg.enableSensors) {
