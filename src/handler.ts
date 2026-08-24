@@ -1,4 +1,10 @@
-import { mapOrcaValues, mapAisValues, MappedPathValue } from './mapper'
+import {
+  mapOrcaValues,
+  mapAisValues,
+  MappedPathValue,
+  SensorMappingOptions,
+  DEFAULT_SENSOR_MAPPING_OPTIONS
+} from './mapper'
 
 export interface OrcaMessage {
   event_type?: string
@@ -16,7 +22,7 @@ export interface MessageSink {
 
 export type AisMode = 'supplemental' | 'all' | 'off'
 
-export interface ProcessingOptions {
+export interface ProcessingOptions extends SensorMappingOptions {
   emitOnlyChanges: boolean
   heartbeatSeconds: number
   sensorMaxAgeSeconds: number
@@ -37,9 +43,11 @@ export interface ProcessingStats {
   droppedStale: number
   droppedInvalid: number
   suppressedUnchanged: number
+  unsupportedRouteEnums: number
 }
 
 export const DEFAULT_PROCESSING_OPTIONS: ProcessingOptions = {
+  ...DEFAULT_SENSOR_MAPPING_OPTIONS,
   emitOnlyChanges: true,
   heartbeatSeconds: 30,
   sensorMaxAgeSeconds: 10,
@@ -158,12 +166,14 @@ export class OrcaMessageProcessor {
     localAisSuppressed: 0,
     droppedStale: 0,
     droppedInvalid: 0,
-    suppressedUnchanged: 0
+    suppressedUnchanged: 0,
+    unsupportedRouteEnums: 0
   }
 
   private readonly clock: () => number
   private readonly accepted = new Map<string, AcceptedValue>()
   private readonly localValues = new Map<string, LocalValue>()
+  private readonly directValues = new Map<string, LocalValue>()
   private readonly localTargets = new Set<string>()
   private readonly sourcePatterns: RegExp[]
 
@@ -175,15 +185,26 @@ export class OrcaMessageProcessor {
 
   recordExternalDelta(delta: any) {
     const context = typeof delta?.context === 'string' ? delta.context : ''
-    if (!context.startsWith('vessels.urn:mrn:imo:mmsi:') || !Array.isArray(delta?.updates)) return
+    const isAisContext = context.startsWith('vessels.urn:mrn:imo:mmsi:')
+    const isSelfContext = context === 'vessels.self'
+    if ((!isAisContext && !isSelfContext) || !Array.isArray(delta?.updates)) return
 
     for (const update of delta.updates) {
       const source = sourceName(update)
-      if (!source || source === 'signalk-orca-core' || !this.sourcePatterns.some((pattern) => pattern.test(source))) {
-        continue
-      }
+      if (!source || source === 'signalk-orca-core') continue
       const timestamp = timestampMilliseconds(update.timestamp) ?? this.clock()
       if (!Array.isArray(update.values)) continue
+
+      if (isSelfContext) {
+        for (const pathValue of update.values) {
+          if (pathValue && typeof pathValue.path === 'string' && pathValue.path !== '') {
+            this.directValues.set(pathValue.path, { timestamp, source })
+          }
+        }
+        continue
+      }
+
+      if (!this.sourcePatterns.some((pattern) => pattern.test(source))) continue
 
       for (const pathValue of update.values) {
         if (!pathValue || typeof pathValue.path !== 'string') continue
@@ -210,17 +231,22 @@ export class OrcaMessageProcessor {
       return
     }
 
-    const sensorValues = mapOrcaValues(values, sink.debug)
+    const routeCalculation = values['navigation.data.254.calculationType'] ??
+      values['navigation.data.254.calculation']
+    if (routeCalculation !== undefined && routeCalculation !== 0 && routeCalculation !== 1) {
+      this.stats.unsupportedRouteEnums += 1
+    }
+    const sensorValues = mapOrcaValues(values, sink.debug, this.options)
     if (sensorValues.length > 0) {
       this.stats.lastSensorMessage = new Date(this.clock()).toISOString()
       const accepted = this.processValues(
-        'vessels.self', sensorValues, data, this.options.sensorMaxAgeSeconds, sink
+        'vessels.self', sensorValues, data, this.options.sensorMaxAgeSeconds, sink, false, true
       )
       this.emit('vessels.self', accepted, sink)
     }
 
     if (this.options.aisMode === 'off') return
-    const aisTargets = mapAisValues(values, sink.debug)
+    const aisTargets = mapAisValues(values, sink.debug, this.options)
     if (aisTargets.length > 0) {
       this.stats.lastAisMessage = new Date(this.clock()).toISOString()
       this.stats.aisTargetCount = aisTargets.length
@@ -313,7 +339,8 @@ export class OrcaMessageProcessor {
     data: OrcaMessage,
     maximumAgeSeconds: number,
     _sink: MessageSink,
-    applyAisPrecedence = false
+    applyAisPrecedence = false,
+    applyDirectPrecedence = false
   ): TimedValue[] {
     const result: TimedValue[] = []
     for (const pathValue of values) {
@@ -324,6 +351,7 @@ export class OrcaMessageProcessor {
       if (applyAisPrecedence && this.localWins(context, pathValue.path, timestamp, valueClass === 'static')) {
         continue
       }
+      if (applyDirectPrecedence && this.directWins(pathValue.path)) continue
       const accepted = this.acceptValue(context, pathValue.path, pathValue.value, timestamp, valueClass)
       if (accepted) result.push(accepted)
     }
@@ -370,6 +398,23 @@ export class OrcaMessageProcessor {
       : localAge <= this.options.localAisFreshnessSeconds * 1000
     if (wins) this.stats.localAisSuppressed += 1
     return wins
+  }
+
+  private directWins(path: string): boolean {
+    if (this.options.mapDuplicateSensors) return false
+    const orcaSpecific = path.endsWith('.crossTrackError') ||
+      path === 'environment.wind.angleTrueGround' ||
+      path === 'environment.depth.transducerToKeel' ||
+      path.startsWith('navigation.courseGreatCircle.nextPoint.') ||
+      path.startsWith('navigation.courseRhumbline.nextPoint.') ||
+      path.startsWith('navigation.orca.') ||
+      path.startsWith('environment.orca.')
+    if (orcaSpecific) return false
+    if (path === 'environment.wind.speedTrue' && this.options.trueWindSpeedReference !== 'existing') {
+      return false
+    }
+    const direct = this.directValues.get(path)
+    return !!direct && this.clock() - direct.timestamp <= this.options.sensorMaxAgeSeconds * 1000
   }
 
   private acceptValue(

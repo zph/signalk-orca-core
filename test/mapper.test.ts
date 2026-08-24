@@ -74,7 +74,8 @@ describe('mapOrcaValues', () => {
 
   it('maps water temperature', () => {
     const result = mapOrcaValues({
-      'environment.temperature.35.0.temperature': 288.15
+      'environment.temperature.35.0.temperature': 288.15,
+      'environment.temperature.35.0.source': 0
     })
     expect(result).toEqual([
       { path: 'environment.water.temperature', value: 288.15 }
@@ -90,12 +91,12 @@ describe('mapOrcaValues', () => {
     ])
   })
 
-  it('maps battery voltage', () => {
+  it('maps battery voltage only when duplicate sensors are enabled', () => {
     const result = mapOrcaValues({
       'battery.254.0.voltage': 12.8
-    })
+    }, undefined, { mapDuplicateSensors: true })
     expect(result).toEqual([
-      { path: 'electrical.batteries.0.voltage', value: 12.8 }
+      { path: 'electrical.batteries.254_0.voltage', value: 12.8 }
     ])
   })
 
@@ -166,10 +167,115 @@ describe('mapOrcaValues', () => {
   ])('maps water temperature from $label', ({ deviceId, instance }) => {
     const result = mapOrcaValues({
       [`environment.temperature.${deviceId}.${instance}.temperature`]: 288.15,
+      [`environment.temperature.${deviceId}.${instance}.source`]: 0,
     })
     expect(result).toContainEqual({
       path: 'environment.water.temperature',
       value: 288.15
+    })
+  })
+
+  it('maps temperature using the source from the same device and instance', () => {
+    const result = mapOrcaValues({
+      'environment.temperature.35.0.temperature': 288.15,
+      'environment.temperature.35.0.source': 0,
+      'environment.temperature.42.1.temperature': 293.15,
+      'environment.temperature.42.1.source': 1,
+      'environment.temperature.55.2.temperature': 295.15,
+      'environment.temperature.55.2.source': 4,
+    })
+
+    expect(result).toContainEqual({ path: 'environment.water.temperature', value: 288.15 })
+    expect(result).toContainEqual({ path: 'environment.outside.temperature', value: 293.15 })
+    expect(result).toContainEqual({ path: 'environment.inside.55_2.temperature', value: 295.15 })
+  })
+
+  it('does not guess water temperature when the source is missing or unknown', () => {
+    const result = mapOrcaValues({
+      'environment.temperature.35.0.temperature': 288.15,
+      'environment.temperature.42.1.temperature': 293.15,
+      'environment.temperature.42.1.source': 99,
+    })
+    expect(result).toEqual([])
+  })
+
+  it.each([
+    { calculationType: 0, family: 'navigation.courseGreatCircle', bearing: 'True', reference: 0 },
+    { calculationType: 1, family: 'navigation.courseRhumbline', bearing: 'Magnetic', reference: 1 },
+  ])('maps active route data to $family', ({ calculationType, family, bearing, reference }) => {
+    const etaDays = Date.UTC(2026, 7, 24) / 86_400_000
+    const result = mapOrcaValues({
+      'navigation.data.254.calculationType': calculationType,
+      'navigation.data.254.bearingReference': reference,
+      'navigation.data.254.latitude': 47.5,
+      'navigation.data.254.longitude': -122.5,
+      'navigation.data.254.distance': 1200,
+      'navigation.data.254.bearingFromPosition': 1.2,
+      'navigation.data.254.bearingFromOrigin': 1.1,
+      'navigation.data.254.velocity': 2.5,
+      'navigation.data.254.etaDate': etaDays,
+      'navigation.data.254.etaTime': 12 * 3600 + 30 * 60,
+      'navigation.xte.254.xte': 4.2,
+    })
+
+    expect(result).toContainEqual({
+      path: `${family}.nextPoint.position`,
+      value: { latitude: 47.5, longitude: -122.5 }
+    })
+    expect(result).toContainEqual({ path: `${family}.nextPoint.distance`, value: 1200 })
+    expect(result).toContainEqual({ path: `${family}.nextPoint.bearing${bearing}`, value: 1.2 })
+    expect(result).toContainEqual({ path: `${family}.bearingTrack${bearing}`, value: 1.1 })
+    expect(result).toContainEqual({ path: `${family}.nextPoint.velocityMadeGood`, value: 2.5 })
+    expect(result).toContainEqual({
+      path: `${family}.nextPoint.estimatedTimeOfArrival`,
+      value: '2026-08-24T12:30:00.000Z'
+    })
+    expect(result).toContainEqual({ path: `${family}.crossTrackError`, value: 4.2 })
+  })
+
+  it('suppresses inactive zero-filled and unsupported route snapshots', () => {
+    const inactive = mapOrcaValues({
+      'navigation.data.254.calculationType': 0,
+      'navigation.data.254.latitude': 0,
+      'navigation.data.254.longitude': 0,
+      'navigation.data.254.distance': 0,
+      'navigation.data.254.bearingFromPosition': 0,
+      'navigation.data.254.bearingFromOrigin': 0,
+      'navigation.data.254.velocity': 0,
+      'navigation.data.254.etaDate': 0,
+      'navigation.data.254.etaTime': 0,
+    })
+    const unsupported = mapOrcaValues({
+      'navigation.data.254.calculationType': 7,
+      'navigation.data.254.latitude': 47.5,
+      'navigation.data.254.longitude': -122.5,
+    })
+    expect(inactive).toEqual([])
+    expect(unsupported).toEqual([])
+  })
+
+  it('selects water-referenced true wind speed when configured', () => {
+    const result = mapOrcaValues({
+      'environment.wind.254.0.speed': 5,
+      'environment.wind.254.3.speed': 6,
+    }, undefined, { trueWindSpeedReference: 'water' })
+    expect(result).toEqual([{ path: 'environment.wind.speedTrue', value: 6 }])
+  })
+
+  it('preserves battery device and instance identities', () => {
+    const result = mapOrcaValues({
+      'battery.224.0.voltage': 12.8,
+      'battery.225.0.voltage': 24.6,
+      'battery.225.1.current': -3.2,
+      'battery.225.1.stateOfCharge': 0.75,
+    }, undefined, { mapDuplicateSensors: true })
+
+    expect(result).toContainEqual({ path: 'electrical.batteries.224_0.voltage', value: 12.8 })
+    expect(result).toContainEqual({ path: 'electrical.batteries.225_0.voltage', value: 24.6 })
+    expect(result).toContainEqual({ path: 'electrical.batteries.225_1.current', value: -3.2 })
+    expect(result).toContainEqual({
+      path: 'electrical.batteries.225_1.capacity.stateOfCharge',
+      value: 0.75
     })
   })
 

@@ -142,6 +142,13 @@ describe('mapAisValues', () => {
     })
     expect(result).toEqual([])
   })
+
+  it('publishes transceiver information only as an opt-in Orca extension', () => {
+    const values = { 'ais.x.999999999.position.tranceiverInfo': 1 }
+    expect(mapAisValues(values)).toEqual([])
+    expect(mapAisValues(values, undefined, { publishOrcaExtensions: true })[0].values)
+      .toContainEqual({ path: 'sensors.ais.transceiverInformation', value: 1 })
+  })
 })
 
 describe('handleOrcaMessage with AIS', () => {

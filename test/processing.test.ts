@@ -191,4 +191,39 @@ describe('OrcaMessageProcessor timestamps and suppression', () => {
     expect(values.some((value: any) => value.path === 'navigation.position')).toBe(false)
     expect(processor.stats.droppedInvalid).toBeGreaterThan(0)
   })
+
+  it('keeps fresh direct sensors authoritative while retaining Orca-specific processing', () => {
+    let now = Date.parse('2026-08-23T12:00:00Z')
+    const processor = new OrcaMessageProcessor({}, () => now)
+    const output = sink()
+    processor.recordExternalDelta({
+      context: 'vessels.self',
+      updates: [{
+        timestamp: new Date(now).toISOString(),
+        $source: 'n2k-onboard.129026',
+        values: [{ path: 'navigation.speedOverGround', value: 4.2 }]
+      }]
+    })
+    const send = () => processor.handle({
+      timestamp: new Date(now).toISOString(),
+      values: {
+        'navigation.cogsog.254.speed': 3.5,
+        'navigation.xte.254.xte': 2.1
+      },
+      values_age: {
+        'navigation.cogsog.254.speed': 0,
+        'navigation.xte.254.xte': 0
+      }
+    }, output)
+
+    send()
+    expect(output.handleMessage.mock.calls[0][1].updates[0].values).toEqual([
+      { path: 'navigation.courseRhumbline.crossTrackError', value: 2.1 }
+    ])
+
+    now += 11_000
+    send()
+    const secondValues = output.handleMessage.mock.calls[1][1].updates[0].values
+    expect(secondValues).toContainEqual({ path: 'navigation.speedOverGround', value: 3.5 })
+  })
 })
