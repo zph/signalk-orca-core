@@ -4,6 +4,45 @@ A Signal K server plugin that ingests sensor, route, and supplemental AIS data f
 
 > This is an independent community plugin. It is not affiliated with, endorsed by, or supported by Orca Marine Systems.
 
+<details>
+<summary><strong>How this fork differs from upstream</strong></summary>
+
+This repository is a fork of Trond Hindenes'
+[signalk-orca-core](https://github.com/trondhindenes/signalk-orca-core). Thank you to Trond and the
+upstream contributors for the original Orca Core integration and for making it available to the
+Signal K community.
+
+I am happy to upstream changes that prove useful beyond this fork. I have been iterating here first
+to learn which ideas hold up and what shape makes sense before proposing them upstream.
+
+This inventory compares the fork with
+[`upstream/main` at `58cd524`](https://github.com/trondhindenes/signalk-orca-core/commit/58cd524170446f2dce25c3c4aaa77e6258f0fce5).
+
+## Major features and changes
+
+| Difference | Commits |
+| --- | --- |
+| Expanded sensor mapping covers active routes, next waypoints, processed cross-track error, ground and water wind, depth offsets, and source-aware temperatures | `7b0b726` |
+| Route bearings publish both true and magnetic values when magnetic variation permits a safe conversion | `38d3dc6` |
+| Supplemental AIS mode preserves fresh onboard AIS as authoritative while adding Orca-only contacts | `6d84786` |
+| Configuration controls discovery, sensor and AIS modes, age limits, duplicate mappings, route handling, wind reference, and optional Orca extensions | `37aec70`, `6d84786` |
+
+## Status and integration improvements
+
+| Difference | Commits |
+| --- | --- |
+| Plugin status reports aggregate target, overlap, suppression, stale, invalid, unchanged, and effective configuration information | `37aec70`, `6d84786` |
+| AIS static data is emitted as collision-safe root fragments so existing Signal K callsign metadata cannot reject a target update | `17a1072` |
+
+## Performance and reliability
+
+| Difference | Commits |
+| --- | --- |
+| Source ages are reconstructed from Orca snapshots, stale values are rejected, unchanged snapshots are suppressed, and configurable heartbeats retain liveness | `6d84786` |
+| The Signal K delta handler is registered during plugin startup so local AIS precedence is observed reliably | `3d954e7` |
+
+</details>
+
 ## Highlights
 
 - Auto-discovers Orca Core via mDNS, with a configured-host fallback.
